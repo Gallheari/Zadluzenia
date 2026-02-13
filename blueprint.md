@@ -1,3 +1,4 @@
+AAAA
 # Przegląd
 
 Ta aplikacja ma na celu pomoc w śledzeniu osobistych długów z różnych subkont. Umożliwia użytkownikom definiowanie subkont, rejestrowanie pożyczek, dokonywanie spłat i przeglądanie podsumowania swoich długów na pulpicie nawigacyjnym.

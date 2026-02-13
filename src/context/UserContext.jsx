@@ -1,107 +1,146 @@
 
-import React, { createContext, useState, useContext, useEffect } from 'react';
-import { collection, getDocs, addDoc, deleteDoc, doc, query, where } from 'firebase/firestore';
-import { db } from '../firebase';
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import { auth, db } from '../firebase';
+import { onAuthStateChanged } from 'firebase/auth';
+import { doc, getDoc, collection, addDoc, updateDoc, deleteDoc, where, query, getDocs, writeBatch } from 'firebase/firestore';
 
-const UserContext = createContext();
+export const UserContext = createContext();
 
-export const useUser = () => useContext(UserContext);
+export function useUser() {
+  return useContext(UserContext);
+}
 
-export const UserProvider = ({ children }) => {
-  const [users, setUsers] = useState([]);
+export function UserProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const fetchUsers = async () => {
-      setLoading(true);
-      try {
-        const querySnapshot = await getDocs(collection(db, 'users'));
-        const usersList = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setUsers(usersList);
-        
-        if (usersList.length > 0) {
-          const lastUserId = localStorage.getItem('lastUser');
-          const foundUser = usersList.find(u => u.id === lastUserId);
-          setCurrentUser(foundUser || usersList[0]);
+    const unsubscribe = onAuthStateChanged(auth, async user => {
+      if (user) {
+        const userRef = doc(db, 'users', user.uid);
+        const userDoc = await getDoc(userRef);
+        if (userDoc.exists()) {
+          setCurrentUser({ id: user.uid, ...userDoc.data() });
         } else {
-          // Jeśli nie ma użytkowników, utwórz domyślnego
-          const defaultUser = { name: 'Domyślny użytkownik' };
-          const docRef = await addDoc(collection(db, 'users'), defaultUser);
-          const newUser = { id: docRef.id, ...defaultUser };
-          setUsers([newUser]);
-          setCurrentUser(newUser);
+          // This case might happen if a user is created in Auth but not in Firestore
+          // For this app, we assume that won't happen as we create them together.
+          setCurrentUser(null);
         }
-      } catch (error) {
-        console.error("Błąd podczas pobierania użytkowników: ", error);
-      } finally {
-        setLoading(false);
+      } else {
+        setCurrentUser(null);
       }
-    };
-    fetchUsers();
+      setLoading(false);
+    });
+
+    return unsubscribe;
   }, []);
 
+  // --- User Management ---
   const addUser = async (name) => {
-    if (name && !users.find(u => u.name === name)) {
-      try {
-        const docRef = await addDoc(collection(db, 'users'), { name });
-        const newUser = { id: docRef.id, name };
-        setUsers([...users, newUser]);
-        switchUser(newUser);
-      } catch (error) {
-        console.error("Błąd podczas dodawania użytkownika: ", error);
-      }
+    // Note: This is a simplified user creation. 
+    // In a real app, you would handle this via Firebase Auth and then create the Firestore doc.
+    // For this app, we'll just add a document to the 'users' collection.
+    const docRef = await addDoc(collection(db, 'users'), { name });
+    // Switch to the newly created user
+    const newUserDoc = await getDoc(docRef);
+    setCurrentUser({ id: docRef.id, ...newUserDoc.data() });
+  };
+
+  // --- Subaccount Management ---
+  const addSubaccount = async (name) => {
+    if (currentUser) {
+      await addDoc(collection(db, 'subaccounts'), {
+        name,
+        userId: currentUser.id,
+      });
     }
   };
 
-  const switchUser = (user) => {
-    setCurrentUser(user);
-    if (user) {
-        localStorage.setItem('lastUser', user.id);
-    } else {
-        localStorage.removeItem('lastUser');
+  const updateSubaccount = async (id, name) => {
+    const subaccountRef = doc(db, 'subaccounts', id);
+    await updateDoc(subaccountRef, { name });
+  };
+
+  const deleteSubaccount = async (id) => {
+    const batch = writeBatch(db);
+    const subaccountRef = doc(db, 'subaccounts', id);
+
+    const debtsQuery = query(collection(db, 'debts'), where('subaccountId', '==', id));
+    const debtsSnapshot = await getDocs(debtsQuery);
+    const debtIds = debtsSnapshot.docs.map(d => d.id);
+
+    if (debtIds.length > 0) {
+      const repaymentsQuery = query(collection(db, 'repayments'), where('debtId', 'in', debtIds));
+      const repaymentsSnapshot = await getDocs(repaymentsQuery);
+      repaymentsSnapshot.forEach(repaymentDoc => {
+        batch.delete(repaymentDoc.ref);
+      });
+    }
+
+    debtsSnapshot.forEach(debtDoc => {
+      batch.delete(debtDoc.ref);
+    });
+
+    batch.delete(subaccountRef);
+    await batch.commit();
+  };
+
+  // --- Debt Management ---
+  const addDebt = async (debtData) => {
+    if(currentUser) {
+        await addDoc(collection(db, 'debts'), {
+            ...debtData,
+            owner: currentUser.id,
+            paid: false,
+            remainingAmount: debtData.amount, // Set initial remaining amount
+        });
     }
   };
 
-  const deleteUser = async (userId) => {
-    try {
-      // Kaskadowe usuwanie danych
-      const collections = ['subaccounts', 'debts', 'repayments'];
-      for (const coll of collections) {
-        const q = query(collection(db, coll), where("userId", "==", userId));
-        const snapshot = await getDocs(q);
-        const deletePromises = snapshot.docs.map(d => deleteDoc(d.ref));
-        await Promise.all(deletePromises);
-      }
-
-      // Usunięcie użytkownika
-      await deleteDoc(doc(db, 'users', userId));
-
-      // Aktualizacja stanu lokalnego
-      const remainingUsers = users.filter(u => u.id !== userId);
-      setUsers(remainingUsers);
-
-      if (remainingUsers.length > 0) {
-        switchUser(remainingUsers[0]);
-      } else {
-        // Jeśli nie ma więcej użytkowników, stwórz nowego domyślnego
-        const defaultUser = { name: 'Domyślny użytkownik' };
-        const docRef = await addDoc(collection(db, 'users'), defaultUser);
-        const newUser = { id: docRef.id, ...defaultUser };
-        setUsers([newUser]);
-        switchUser(newUser);
-      }
-
-    } catch (error) {
-      console.error("Błąd podczas usuwania użytkownika: ", error);
-    }
+  const updateDebt = async (id, data) => {
+    const debtRef = doc(db, 'debts', id);
+    await updateDoc(debtRef, data);
   };
 
-  const value = { currentUser, users, addUser, switchUser, deleteUser, loading };
+    const addRepayment = async (debtId, amount, date) => {
+        const debtRef = doc(db, 'debts', debtId);
+        const debtDoc = await getDoc(debtRef);
+
+        if (debtDoc.exists()) {
+            const debtData = debtDoc.data();
+            const newRemainingAmount = debtData.remainingAmount - amount;
+
+            await updateDoc(debtRef, {
+                remainingAmount: newRemainingAmount,
+                paid: newRemainingAmount <= 0,
+            });
+
+            await addDoc(collection(db, 'repayments'), {
+                debtId,
+                amount,
+                date,
+            });
+        } else {
+            throw new Error("Debt not found!");
+        }
+    };
+
+  const value = {
+    currentUser,
+    loading,
+    addUser,
+    addSubaccount,
+    updateSubaccount,
+    deleteSubaccount,
+    addDebt,
+    updateDebt,
+    addRepayment,
+    setCurrentUser // Exposing setCurrentUser to allow switching in UserSelector
+  };
 
   return (
     <UserContext.Provider value={value}>
       {!loading && children}
     </UserContext.Provider>
   );
-};
+}

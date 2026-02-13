@@ -9,7 +9,6 @@ import AddDebt from './pages/AddDebt';
 import RepayDebt from './pages/RepayDebt';
 import Navbar from './components/Navbar';
 import UserSelector from './components/UserSelector';
-import { UserProvider } from './context/UserContext';
 import { useThemeContext } from './context/ThemeContext'; // Import hooka
 import { createTheme } from '@mui/material/styles';
 

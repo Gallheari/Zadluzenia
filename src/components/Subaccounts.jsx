@@ -1,167 +1,199 @@
 
 import React, { useState, useEffect } from 'react';
-import { db } from '../firebase';
-import { collection, addDoc, getDocs, query, where, Timestamp } from 'firebase/firestore';
 import { useUser } from '../context/UserContext';
-import { Box, TextField, Button, List, ListItem, ListItemText, Typography, IconButton, Dialog, DialogTitle, DialogContent, DialogActions, CircularProgress } from '@mui/material';
-import HistoryIcon from '@mui/icons-material/History';
-
-// Funkcja do formatowania daty
-const formatDate = (timestamp) => {
-  if (timestamp instanceof Timestamp) {
-    return timestamp.toDate().toLocaleString('pl-PL');
-  }
-  return 'Brak daty';
-};
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { db } from '../firebase';
+import {
+  Box,
+  Button,
+  TextField,
+  List,
+  ListItem,
+  ListItemText,
+  IconButton,
+  Typography,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  DialogContentText,
+  Tooltip,
+  Paper,
+  Grid
+} from '@mui/material';
+import { Edit, Delete, Visibility, Add } from '@mui/icons-material';
+import RepaymentHistory from './RepaymentHistory';
 
 function Subaccounts() {
-  const { currentUser } = useUser();
+  const { currentUser, updateSubaccount, deleteSubaccount, addSubaccount } = useUser();
   const [subaccounts, setSubaccounts] = useState([]);
-  const [newSubaccount, setNewSubaccount] = useState('');
-  const [loading, setLoading] = useState(true);
-
-  // Stany do obsługi okna dialogowego historii
+  const [newSubaccountName, setNewSubaccountName] = useState('');
+  const [editingSubaccount, setEditingSubaccount] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [openEditDialog, setOpenEditDialog] = useState(false);
+  const [openDeleteDialog, setOpenDeleteDialog] = useState(false);
+  const [deletingSubaccount, setDeletingSubaccount] = useState(null);
   const [openHistoryDialog, setOpenHistoryDialog] = useState(false);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [selectedSubaccount, setSelectedSubaccount] = useState(null);
-  const [repaymentHistory, setRepaymentHistory] = useState([]);
+  const [historySubaccount, setHistorySubaccount] = useState(null);
+  const [showAddForm, setShowAddForm] = useState(false);
 
   useEffect(() => {
-    if (!currentUser) {
-      setSubaccounts([]);
-      setLoading(false);
-      return;
-    }
-    const fetchSubaccounts = async () => {
-      setLoading(true);
-      try {
-        const q = query(collection(db, "subaccounts"), where("owner", "==", currentUser.id));
-        const querySnapshot = await getDocs(q);
-        const subaccountsList = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    if (currentUser) {
+      const q = query(collection(db, 'subaccounts'), where('userId', '==', currentUser.id));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const subaccountsList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         setSubaccounts(subaccountsList);
-      } catch (error) {
-        console.error("Błąd podczas pobierania subkont: ", error);
-      }
-      setLoading(false);
-    };
-
-    fetchSubaccounts();
+      });
+      return () => unsubscribe();
+    } else {
+      setSubaccounts([]);
+    }
   }, [currentUser]);
 
   const handleAddSubaccount = async () => {
-    if (newSubaccount.trim() === '') return;
-    try {
-      const docRef = await addDoc(collection(db, "subaccounts"), {
-        name: newSubaccount,
-        owner: currentUser.id
-      });
-      setSubaccounts([...subaccounts, { id: docRef.id, name: newSubaccount, owner: currentUser.id }]);
-      setNewSubaccount('');
-    } catch (error) {
-      console.error("Błąd podczas dodawania subkonta: ", error);
+    if (newSubaccountName.trim() !== '' && currentUser) {
+        await addSubaccount(newSubaccountName.trim());
+        setNewSubaccountName('');
+        setShowAddForm(false);
     }
   };
 
-  const handleOpenHistory = async (subaccount) => {
-    setSelectedSubaccount(subaccount);
+  const handleOpenEditDialog = (subaccount) => {
+    setEditingSubaccount(subaccount);
+    setEditName(subaccount.name);
+    setOpenEditDialog(true);
+  };
+
+  const handleUpdateSubaccount = async () => {
+    if (editingSubaccount && editName.trim() !== '') {
+      await updateSubaccount(editingSubaccount.id, editName.trim());
+      setOpenEditDialog(false);
+      setEditingSubaccount(null);
+    }
+  };
+
+  const handleOpenDeleteDialog = (subaccount) => {
+    setDeletingSubaccount(subaccount);
+    setOpenDeleteDialog(true);
+  };
+
+  const handleDeleteSubaccount = async () => {
+    if (deletingSubaccount) {
+      await deleteSubaccount(deletingSubaccount.id);
+      setOpenDeleteDialog(false);
+      setDeletingSubaccount(null);
+    }
+  };
+
+  const handleOpenHistoryDialog = (subaccount) => {
+    setHistorySubaccount(subaccount);
     setOpenHistoryDialog(true);
-    setHistoryLoading(true);
-
-    try {
-      // 1. Znajdź wszystkie długi dla danego subkonta
-      const debtsQuery = query(collection(db, 'debts'), where('subaccountId', '==', subaccount.id));
-      const debtsSnapshot = await getDocs(debtsQuery);
-      const debtsMap = new Map(debtsSnapshot.docs.map(doc => [doc.id, doc.data()]));
-      const debtIds = Array.from(debtsMap.keys());
-
-      if (debtIds.length === 0) {
-        setRepaymentHistory([]);
-        setHistoryLoading(false);
-        return;
-      }
-
-      // 2. Znajdź wszystkie spłaty dla tych długów
-      const repaymentsQuery = query(collection(db, 'repayments'), where('debtId', 'in', debtIds));
-      const repaymentsSnapshot = await getDocs(repaymentsQuery);
-      const history = repaymentsSnapshot.docs.map(doc => {
-        const repaymentData = doc.data();
-        const debt = debtsMap.get(repaymentData.debtId);
-        return {
-          id: doc.id,
-          ...repaymentData,
-          debtDescription: debt ? debt.description : 'Nieznany dług'
-        };
-      }).sort((a, b) => b.createdAt - a.createdAt); // Sortuj od najnowszych
-
-      setRepaymentHistory(history);
-    } catch (error) {
-      console.error("Błąd podczas pobierania historii spłat: ", error);
-      setRepaymentHistory([]);
-    }
-
-    setHistoryLoading(false);
-  };
-
-  const handleCloseHistory = () => {
-    setOpenHistoryDialog(false);
-    setSelectedSubaccount(null);
-    setRepaymentHistory([]);
   };
 
   return (
-    <Box>
-      <Box sx={{ display: 'flex', mb: 2 }}>
-        <TextField
-          label="Nowe subkonto"
-          variant="outlined"
-          size="small"
-          value={newSubaccount}
-          onChange={(e) => setNewSubaccount(e.target.value)}
-          sx={{ flexGrow: 1, mr: 1 }}
-        />
-        <Button variant="contained" onClick={handleAddSubaccount}>Dodaj</Button>
-      </Box>
-      {loading ? (
-        <Typography>Ładowanie...</Typography>
-      ) : (
-        <List>
-          {subaccounts.map((sub) => (
-            <ListItem key={sub.id} divider secondaryAction={
-              <IconButton edge="end" aria-label="historia" onClick={() => handleOpenHistory(sub)}>
-                <HistoryIcon />
-              </IconButton>
-            }>
-              <ListItemText primary={sub.name} />
-            </ListItem>
-          ))}
-        </List>
-      )}
+    <Box sx={{ mt: 4 }}>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+            <Typography variant="h5" gutterBottom sx={{ mb: 0 }}>
+            Subkonta
+            </Typography>
+            <Tooltip title="Dodaj nowe subkonto">
+            <IconButton onClick={() => setShowAddForm(!showAddForm)}>
+                <Add />
+            </IconButton>
+            </Tooltip>
+        </Box>
 
-      {/* Okno dialogowe historii spłat */}
-      <Dialog open={openHistoryDialog} onClose={handleCloseHistory} fullWidth maxWidth="md">
-        <DialogTitle>Historia spłat dla: {selectedSubaccount?.name}</DialogTitle>
-        <DialogContent dividers>
-          {historyLoading ? (
-            <Box sx={{ display: 'flex', justifyContent: 'center', my: 3 }}><CircularProgress /></Box>
-          ) : repaymentHistory.length > 0 ? (
-            <List>
-              {repaymentHistory.map(repayment => (
-                <ListItem key={repayment.id}>
-                  <ListItemText 
-                    primary={`Kwota: ${repayment.amount.toFixed(2)} zł`}
-                    secondary={`Data: ${formatDate(repayment.createdAt)} | Dług: ${repayment.debtDescription}`}
-                  />
-                </ListItem>
-              ))}
-            </List>
-          ) : (
-            <Typography sx={{ p: 2 }}>Brak historii spłat dla tego subkonta.</Typography>
-          )}
+        {showAddForm && (
+            <Paper sx={{ p: 2, mb: 3, mt: 2 }}>
+                <Grid container spacing={2} alignItems="center">
+                    <Grid item xs={12} sm={9}>
+                        <TextField
+                            label="Nazwa nowego subkonta"
+                            variant="outlined"
+                            fullWidth
+                            value={newSubaccountName}
+                            onChange={(e) => setNewSubaccountName(e.target.value)}
+                            autoFocus
+                        />
+                    </Grid>
+                    <Grid item xs={12} sm={3}>
+                        <Button variant="contained" fullWidth onClick={handleAddSubaccount} sx={{height: '100%'}}>Dodaj</Button>
+                    </Grid>
+                </Grid>
+            </Paper>
+        )}
+
+      <List sx={{ pt: showAddForm ? 0 : 2 }}>
+        {subaccounts.map(subaccount => (
+          <Paper key={subaccount.id} sx={{ mb: 1 }}>
+            <ListItem 
+              secondaryAction={
+                <Box>
+                  <Tooltip title="Historia spłat">
+                    <IconButton edge="end" aria-label="history" onClick={() => handleOpenHistoryDialog(subaccount)}>
+                      <Visibility />
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title="Edytuj">
+                    <IconButton edge="end" aria-label="edit" onClick={() => handleOpenEditDialog(subaccount)}>
+                      <Edit />
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title="Usuń">
+                    <IconButton edge="end" aria-label="delete" onClick={() => handleOpenDeleteDialog(subaccount)}>
+                      <Delete />
+                    </IconButton>
+                  </Tooltip>
+                </Box>
+              }
+            >
+              <ListItemText primary={subaccount.name} />
+            </ListItem>
+          </Paper>
+        ))}
+      </List>
+
+      <Dialog open={openEditDialog} onClose={() => setOpenEditDialog(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Edytuj nazwę subkonta</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="Nowa nazwa"
+            type="text"
+            fullWidth
+            variant="outlined"
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+          />
         </DialogContent>
         <DialogActions>
-          <Button onClick={handleCloseHistory}>Zamknij</Button>
+          <Button onClick={() => setOpenEditDialog(false)}>Anuluj</Button>
+          <Button onClick={handleUpdateSubaccount}>Zapisz</Button>
         </DialogActions>
       </Dialog>
+
+      <Dialog open={openDeleteDialog} onClose={() => setOpenDeleteDialog(false)}>
+        <DialogTitle>Potwierdź usunięcie</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Czy na pewno chcesz usunąć subkonto "{deletingSubaccount?.name}"? Spowoduje to usunięcie wszystkich powiązanych z nim długów i historii spłat.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOpenDeleteDialog(false)}>Anuluj</Button>
+          <Button onClick={handleDeleteSubaccount} color="error">Usuń</Button>
+        </DialogActions>
+      </Dialog>
+
+      {historySubaccount && (
+        <RepaymentHistory 
+          open={openHistoryDialog} 
+          onClose={() => setOpenHistoryDialog(false)} 
+          subaccountId={historySubaccount.id} 
+          subaccountName={historySubaccount.name}
+        />
+      )}
     </Box>
   );
 }

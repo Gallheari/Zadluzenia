@@ -1,114 +1,109 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useUser } from '../context/UserContext';
-import {
-  Box,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
-  TextField,
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogContentText,
-  DialogTitle,
-  IconButton,
-} from '@mui/material';
-import DeleteIcon from '@mui/icons-material/Delete';
+import { db } from '../firebase';
+import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
+import { Select, MenuItem, FormControl, InputLabel, Button, TextField, Box, Typography, Grid } from '@mui/material';
 
 function UserSelector() {
-  const { currentUser, users, addUser, switchUser, deleteUser } = useUser();
+  const { currentUser, setCurrentUser, addUser } = useUser();
+  const [users, setUsers] = useState([]);
+  const [selectedUserId, setSelectedUserId] = useState('');
   const [newUserName, setNewUserName] = useState('');
-  const [openDeleteDialog, setOpenDeleteDialog] = useState(false);
-  const [deleteConfirmName, setDeleteConfirmName] = useState('');
+  const [showAddUser, setShowAddUser] = useState(false);
 
-  const handleAddUser = () => {
-    if (newUserName.trim() !== '') {
-      addUser(newUserName.trim());
-      setNewUserName('');
+  useEffect(() => {
+    const fetchUsers = async () => {
+      const usersCollection = collection(db, 'users');
+      const usersSnapshot = await getDocs(usersCollection);
+      const usersList = usersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setUsers(usersList);
+      
+      // Set initial selected user if currentUser is available
+      if (currentUser) {
+        setSelectedUserId(currentUser.id);
+      } else if (usersList.length > 0) {
+        // Or default to the first user if no one is selected
+        setSelectedUserId(usersList[0].id);
+        const userDoc = await getDoc(doc(db, 'users', usersList[0].id));
+        setCurrentUser({ id: usersList[0].id, ...userDoc.data() });
+      }
+    };
+
+    fetchUsers();
+  }, [currentUser, setCurrentUser]);
+
+  const handleUserChange = async (event) => {
+    const userId = event.target.value;
+    setSelectedUserId(userId);
+    if (userId) {
+      const userDoc = await getDoc(doc(db, 'users', userId));
+      if(userDoc.exists()){
+        setCurrentUser({ id: userId, ...userDoc.data() });
+      }
+    } else {
+      setCurrentUser(null);
     }
   };
 
-  const handleDeleteUser = () => {
-    if (currentUser && deleteConfirmName === currentUser.name) {
-      deleteUser(currentUser.id);
-      setOpenDeleteDialog(false);
-      setDeleteConfirmName('');
+  const handleAddUser = async () => {
+    if (newUserName.trim() !== '') {
+      await addUser(newUserName.trim());
+      setNewUserName('');
+      setShowAddUser(false);
+      // The user will be switched automatically by the context
     }
   };
 
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 4 }}>
-      {currentUser && (
-        <FormControl sx={{ minWidth: 200 }}>
-          <InputLabel id="user-select-label">Zalogowany jako</InputLabel>
-          <Select
-            labelId="user-select-label"
-            value={currentUser.id}
-            label="Zalogowany jako"
-            onChange={(e) => {
-              const user = users.find(u => u.id === e.target.value);
-              if (user) switchUser(user);
-            }}
-          >
-            {users.map(user => (
-              <MenuItem key={user.id} value={user.id}>
-                {user.name}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-      )}
-      <TextField
-        label="Nowa nazwa użytkownika"
-        variant="outlined"
-        size="small"
-        value={newUserName}
-        onChange={(e) => setNewUserName(e.target.value)}
-      />
-      <Button variant="contained" onClick={handleAddUser}>Dodaj</Button>
-
-      {currentUser && users.length > 0 && (
-        <IconButton
-          color="error"
-          onClick={() => setOpenDeleteDialog(true)}
-          sx={{ ml: 1 }}
-        >
-          <DeleteIcon />
-        </IconButton>
-      )}
-
-      {/* Okno dialogowe potwierdzenia usunięcia */}
-      <Dialog open={openDeleteDialog} onClose={() => setOpenDeleteDialog(false)}>
-        <DialogTitle>Potwierdź usunięcie użytkownika</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            Aby trwale usunąć użytkownika <strong>{currentUser?.name}</strong> i wszystkie jego dane (subkonta, długi, historię spłat), wpisz jego nazwę poniżej.
-          </DialogContentText>
-          <TextField
-            autoFocus
-            margin="dense"
-            label="Nazwa użytkownika"
-            type="text"
-            fullWidth
-            variant="standard"
-            value={deleteConfirmName}
-            onChange={(e) => setDeleteConfirmName(e.target.value)}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setOpenDeleteDialog(false)}>Anuluj</Button>
-          <Button
-            onClick={handleDeleteUser}
-            color="error"
-            disabled={deleteConfirmName !== currentUser?.name}
-          >
-            Zatwierdź usunięcie
+    <Box sx={{ mb: 4 }}>
+      <Typography variant="h6">Zarządzanie użytkownikami</Typography>
+      <Grid container spacing={2} alignItems="center" sx={{ mt: 1 }}>
+        <Grid item xs={12} sm={6}>
+          <FormControl fullWidth>
+            <InputLabel id="user-select-label">Wybierz użytkownika</InputLabel>
+            <Select
+              labelId="user-select-label"
+              value={selectedUserId}
+              onChange={handleUserChange}
+              label="Wybierz użytkownika"
+            >
+              {users.map((user) => (
+                <MenuItem key={user.id} value={user.id}>
+                  {user.name}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        </Grid>
+        <Grid item xs={12} sm={6}>
+          <Button variant="outlined" onClick={() => setShowAddUser(!showAddUser)} fullWidth>
+            {showAddUser ? 'Anuluj' : 'Dodaj nowego użytkownika'}
           </Button>
-        </DialogActions>
-      </Dialog>
+        </Grid>
+      </Grid>
+
+      {showAddUser && (
+        <Box sx={{ mt: 2, p: 2, border: '1px solid #ccc', borderRadius: 1 }}>
+            <Typography variant="subtitle1" gutterBottom>Nowy użytkownik</Typography>
+            <Grid container spacing={2}>
+                <Grid item xs={12} sm={8}>
+                    <TextField
+                    label="Nazwa użytkownika"
+                    variant="outlined"
+                    fullWidth
+                    value={newUserName}
+                    onChange={(e) => setNewUserName(e.target.value)}
+                    />
+                </Grid>
+                <Grid item xs={12} sm={4}>
+                    <Button variant="contained" color="primary" onClick={handleAddUser} fullWidth sx={{height: '100%'}}>
+                        Dodaj
+                    </Button>
+                </Grid>
+            </Grid>
+        </Box>
+      )}
     </Box>
   );
 }
